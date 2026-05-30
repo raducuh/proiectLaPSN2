@@ -78,7 +78,7 @@
       <ul class="lista" id="mesaje-lista">
         {% if mesaje %}
           {% for m in mesaje %}
-            <li>{{ m }} <span>#{{ loop.index }}</span></li>
+            <li>{{ m.mesaj }} <span>#{{ loop.index }}</span></li>
           {% endfor %}
         {% else %}
           <li class="empty">Niciun mesajinca.</li>
@@ -136,19 +136,20 @@
       actualizeazaEvenimente(d.evenimente);
     }
 
-    function actualizeazaMesaje(mesaje) {
-      const lista = document.getElementById("mesaje-lista");
-      lista.innerHTML = "";
-      if (mesaje.length === 0) {
-        lista.innerHTML = "<li class='empty'>Niciun mesajinca.</li>";
-        return;
-      }
-      mesaje.forEach((m, i) => {
-        const li = document.createElement("li");
-        li.innerHTML = m + " <span>#" + (i+1) + "</span>";
-        lista.appendChild(li);
-      });
-    }
+  function actualizeazaMesaje(mesaje) {
+  const lista = document.getElementById("mesaje-lista");
+  lista.innerHTML = "";
+  if (mesaje.length === 0) {
+    lista.innerHTML = "<li class='empty'>Niciun mesajinca.</li>";
+    return;
+  }
+  mesaje.forEach((m, i) => {
+    const li = document.createElement("li");
+    const text = typeof m === 'string' ? m : m.mesaj;
+    li.innerHTML = text + " <span>#" + (i+1) + "</span>";
+    lista.appendChild(li);
+  });
+}
 
     function actualizeazaEvenimente(evenimente) {
       const lista = document.getElementById("evenimente-lista");

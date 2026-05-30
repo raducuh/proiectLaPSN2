@@ -1,47 +1,88 @@
 from flask import Flask, render_template, request, jsonify
 import threading
 import time
-import random
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime
-import sqlite3
-import os
+import psycopg2
+import psycopg2.extras
+import serial
+import serial.tools.list_ports
+import re
 
 app = Flask(__name__)
 
 led_stare = False
-temperatura_curenta = 25.0
+temperatura_curenta = 0.0
+nivel_apa = 0
+ser = None
 
-DATABASE = "psn2.db"
+DATABASE_URL = "postgresql://psn2_db_user:Cz3QM2YjpqHEI2hjcZ8Q6rj4VoqoWsb9@dpg-d8dd7ternols7397nn10-a.frankfurt-postgres.render.com/psn2_db"
+
+EMAIL_EXPEDITOR = "proiectnanu2@gmail.com"
+EMAIL_PAROLA = "wjtr xltv brog qvxt"
+EMAIL_DESTINATAR = "proiectnanu2@gmail.com"
+
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
 
 def init_db():
-    conn = sqlite3.connect(DATABASE)
+    conn = get_conn()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS mesaje
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 (id SERIAL PRIMARY KEY,
                   mesaj TEXT,
                   timestamp TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS evenimente
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 (id SERIAL PRIMARY KEY,
                   timestamp TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-EMAIL_EXPEDITOR = "proiectnanu2@gmail.com"
-EMAIL_PAROLA = "wjtr xltv brog qvxt"
-EMAIL_DESTINATAR = "proiectnanu2@gmail.com"
+def conectare_arduino():
+    global ser
+    porturi = serial.tools.list_ports.comports()
+    for port in porturi:
+        try:
+            ser = serial.Serial(port.device, 9600, timeout=1)
+            time.sleep(2)
+            print(f"Arduino conectat pe {port.device}")
+            return
+        except:
+            continue
+    print("Arduino negasit - rulam fara hardware")
 
-def simuleaza_temperatura():
-    global temperatura_curenta
+def citire_serial():
+    global temperatura_curenta, nivel_apa
     while True:
-        temperatura_curenta = round(20 + random.uniform(0, 15), 1)
-        time.sleep(3)
+        try:
+            if ser and ser.in_waiting:
+                linie = ser.readline().decode("utf-8", errors="ignore").strip()
+                print(f"Serial: {linie}")
+                if "Temp:" in linie:
+                    match_temp = re.search(r'Temp:\s*([\d.]+)', linie)
+                    match_apa = re.search(r'Nivel apa:\s*(\d+)', linie)
+                    if match_temp:
+                        temperatura_curenta = float(match_temp.group(1))
+                    if match_apa:
+                        nivel_apa = int(match_apa.group(1))
+                elif "ALERTA" in linie:
+                    inregistreaza_inundatie()
+        except Exception as e:
+            print(f"Eroare serial: {e}")
+        time.sleep(0.1)
 
-t = threading.Thread(target=simuleaza_temperatura, daemon=True)
-t.start()
+def inregistreaza_inundatie():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("INSERT INTO evenimente (timestamp) VALUES (%s)",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+    c.execute("DELETE FROM evenimente WHERE id NOT IN (SELECT id FROM evenimente ORDER BY id DESC LIMIT 10)")
+    conn.commit()
+    conn.close()
+    threading.Thread(target=trimite_email_inundatie, daemon=True).start()
 
 def trimite_email_inundatie():
     try:
@@ -52,26 +93,27 @@ def trimite_email_inundatie():
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(EMAIL_EXPEDITOR, EMAIL_PAROLA)
             server.sendmail(EMAIL_EXPEDITOR, EMAIL_DESTINATAR, msg.as_string())
-        return True
     except Exception as e:
         print(f"Eroare email: {e}")
-        return False
+
+conectare_arduino()
+threading.Thread(target=citire_serial, daemon=True).start()
 
 def get_mesaje_db():
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     c.execute("SELECT id, mesaj, timestamp FROM mesaje ORDER BY id DESC LIMIT 10")
     rows = c.fetchall()
     conn.close()
-    return [{"id": r[0], "mesaj": r[1], "timestamp": r[2]} for r in rows]
+    return [dict(r) for r in rows]
 
 def get_evenimente_db():
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
+    conn = get_conn()
+    c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     c.execute("SELECT id, timestamp FROM evenimente ORDER BY id DESC LIMIT 10")
     rows = c.fetchall()
     conn.close()
-    return [{"id": r[0], "timestamp": r[1]} for r in rows]
+    return [dict(r) for r in rows]
 
 @app.route("/")
 def index():
@@ -89,7 +131,10 @@ def temperatura():
 def led():
     global led_stare
     data = request.get_json()
-    led_stare = data.get("stare", False)
+    stare = data.get("stare", False)
+    led_stare = stare
+    if ser:
+        ser.write(b'A' if stare else b'S')
     return jsonify({"led": led_stare})
 
 @app.route("/mesaj", methods=["POST"])
@@ -97,9 +142,11 @@ def mesaj():
     data = request.get_json()
     msg = data.get("mesaj", "").strip()
     if msg:
-        conn = sqlite3.connect(DATABASE)
+        if ser:
+            ser.write((msg + "\n").encode())
+        conn = get_conn()
         c = conn.cursor()
-        c.execute("INSERT INTO mesaje (mesaj, timestamp) VALUES (?, ?)",
+        c.execute("INSERT INTO mesaje (mesaj, timestamp) VALUES (%s, %s)",
                   (msg, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         c.execute("DELETE FROM mesaje WHERE id NOT IN (SELECT id FROM mesaje ORDER BY id DESC LIMIT 10)")
         conn.commit()
@@ -112,21 +159,14 @@ def get_mesaje():
 
 @app.route("/inundatie", methods=["POST"])
 def inundatie():
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute("INSERT INTO evenimente (timestamp) VALUES (?)",
-              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
-    c.execute("DELETE FROM evenimente WHERE id NOT IN (SELECT id FROM evenimente ORDER BY id DESC LIMIT 10)")
-    conn.commit()
-    conn.close()
-    threading.Thread(target=trimite_email_inundatie, daemon=True).start()
+    inregistreaza_inundatie()
     return jsonify({"evenimente": get_evenimente_db()})
 
 @app.route("/inundatie/sterge/<int:event_id>", methods=["DELETE"])
 def sterge_eveniment(event_id):
-    conn = sqlite3.connect(DATABASE)
+    conn = get_conn()
     c = conn.cursor()
-    c.execute("DELETE FROM evenimente WHERE id = ?", (event_id,))
+    c.execute("DELETE FROM evenimente WHERE id = %s", (event_id,))
     conn.commit()
     conn.close()
     return jsonify({"evenimente": get_evenimente_db()})
@@ -136,4 +176,4 @@ def get_evenimente():
     return jsonify({"evenimente": get_evenimente_db()})
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=5000)
