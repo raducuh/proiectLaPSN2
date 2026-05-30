@@ -5,17 +5,34 @@ import random
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime
+import sqlite3
+import os
 
 app = Flask(__name__)
 
 led_stare = False
 temperatura_curenta = 25.0
-mesaje = []
-evenimente_inundatie = []
+
+DATABASE = "psn2.db"
+
+def init_db():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS mesaje
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  mesaj TEXT,
+                  timestamp TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS evenimente
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT)''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 EMAIL_EXPEDITOR = "proiectnanu2@gmail.com"
 EMAIL_PAROLA = "wjtr xltv brog qvxt"
-EMAIL_DESTINATAR = "proiectnanu2@gmail.com"  # schimba cu emailul tau real
+EMAIL_DESTINATAR = "proiectnanu2@gmail.com"
 
 def simuleaza_temperatura():
     global temperatura_curenta
@@ -40,13 +57,29 @@ def trimite_email_inundatie():
         print(f"Eroare email: {e}")
         return False
 
+def get_mesaje_db():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT id, mesaj, timestamp FROM mesaje ORDER BY id DESC LIMIT 10")
+    rows = c.fetchall()
+    conn.close()
+    return [{"id": r[0], "mesaj": r[1], "timestamp": r[2]} for r in rows]
+
+def get_evenimente_db():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT id, timestamp FROM evenimente ORDER BY id DESC LIMIT 10")
+    rows = c.fetchall()
+    conn.close()
+    return [{"id": r[0], "timestamp": r[1]} for r in rows]
+
 @app.route("/")
 def index():
     return render_template("index.html",
                            temperatura=temperatura_curenta,
                            led=led_stare,
-                           mesaje=mesaje,
-                           evenimente=evenimente_inundatie)
+                           mesaje=get_mesaje_db(),
+                           evenimente=get_evenimente_db())
 
 @app.route("/temperatura")
 def temperatura():
@@ -61,41 +94,46 @@ def led():
 
 @app.route("/mesaj", methods=["POST"])
 def mesaj():
-    global mesaje
     data = request.get_json()
     msg = data.get("mesaj", "").strip()
     if msg:
-        mesaje.append(msg)
-        if len(mesaje) > 10:
-            mesaje.pop(0)
-    return jsonify({"mesaje": mesaje})
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute("INSERT INTO mesaje (mesaj, timestamp) VALUES (?, ?)",
+                  (msg, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        c.execute("DELETE FROM mesaje WHERE id NOT IN (SELECT id FROM mesaje ORDER BY id DESC LIMIT 10)")
+        conn.commit()
+        conn.close()
+    return jsonify({"mesaje": get_mesaje_db()})
 
 @app.route("/mesaje")
 def get_mesaje():
-    return jsonify({"mesaje": mesaje})
+    return jsonify({"mesaje": get_mesaje_db()})
 
 @app.route("/inundatie", methods=["POST"])
 def inundatie():
-    global evenimente_inundatie
-    eveniment = {
-        "id": len(evenimente_inundatie) + 1,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    evenimente_inundatie.append(eveniment)
-    if len(evenimente_inundatie) > 10:
-        evenimente_inundatie.pop(0)
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("INSERT INTO evenimente (timestamp) VALUES (?)",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
+    c.execute("DELETE FROM evenimente WHERE id NOT IN (SELECT id FROM evenimente ORDER BY id DESC LIMIT 10)")
+    conn.commit()
+    conn.close()
     threading.Thread(target=trimite_email_inundatie, daemon=True).start()
-    return jsonify({"evenimente": evenimente_inundatie})
+    return jsonify({"evenimente": get_evenimente_db()})
 
 @app.route("/inundatie/sterge/<int:event_id>", methods=["DELETE"])
 def sterge_eveniment(event_id):
-    global evenimente_inundatie
-    evenimente_inundatie = [e for e in evenimente_inundatie if e["id"] != event_id]
-    return jsonify({"evenimente": evenimente_inundatie})
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("DELETE FROM evenimente WHERE id = ?", (event_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"evenimente": get_evenimente_db()})
 
 @app.route("/evenimente")
 def get_evenimente():
-    return jsonify({"evenimente": evenimente_inundatie})
+    return jsonify({"evenimente": get_evenimente_db()})
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
