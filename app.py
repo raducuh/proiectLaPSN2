@@ -1,3 +1,7 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 from flask import Flask, render_template, request, jsonify
 import threading
 import time
@@ -14,10 +18,9 @@ app = Flask(__name__)
 
 ser = None
 
-DATABASE_URL = "postgresql://psn2_db_user:Cz3QM2YjpqHEI2hjcZ8Q6rj4VoqoWsb9@dpg-d8dd7ternols7397nn10-a.frankfurt-postgres.render.com/psn2_db"
-
+DATABASE_URL = os.environ.get("DATABASE_URL")
 EMAIL_EXPEDITOR = "proiectnanu2@gmail.com"
-EMAIL_PAROLA = "wjtr xltv brog qvxt"
+EMAIL_PAROLA = os.environ.get("EMAIL_PAROLA")
 EMAIL_DESTINATAR = "proiectnanu2@gmail.com"
 
 def get_conn():
