@@ -13,8 +13,6 @@ import re
 app = Flask(__name__)
 
 led_stare = False
-temperatura_curenta = 0.0
-nivel_apa = 0
 ser = None
 
 DATABASE_URL = "postgresql://psn2_db_user:Cz3QM2YjpqHEI2hjcZ8Q6rj4VoqoWsb9@dpg-d8dd7ternols7397nn10-a.frankfurt-postgres.render.com/psn2_db"
@@ -36,6 +34,14 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS evenimente
                  (id SERIAL PRIMARY KEY,
                   timestamp TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS temperatura
+                 (id SERIAL PRIMARY KEY,
+                  valoare FLOAT,
+                  timestamp TEXT)''')
+    c.execute('''INSERT INTO temperatura (valoare, timestamp)
+                 SELECT 0, %s
+                 WHERE NOT EXISTS (SELECT 1 FROM temperatura)''',
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"),))
     conn.commit()
     conn.close()
 
@@ -54,8 +60,15 @@ def conectare_arduino():
             continue
     print("Arduino negasit - rulam fara hardware")
 
+def salveaza_temperatura(valoare):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE temperatura SET valoare = %s, timestamp = %s WHERE id = 1",
+              (valoare, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+
 def citire_serial():
-    global temperatura_curenta, nivel_apa
     while True:
         try:
             if ser and ser.in_waiting:
@@ -63,11 +76,9 @@ def citire_serial():
                 print(f"Serial: {linie}")
                 if "Temp:" in linie:
                     match_temp = re.search(r'Temp:\s*([\d.]+)', linie)
-                    match_apa = re.search(r'Nivel apa:\s*(\d+)', linie)
                     if match_temp:
-                        temperatura_curenta = float(match_temp.group(1))
-                    if match_apa:
-                        nivel_apa = int(match_apa.group(1))
+                        temp = float(match_temp.group(1))
+                        salveaza_temperatura(temp)
                 elif "ALERTA" in linie:
                     inregistreaza_inundatie()
         except Exception as e:
@@ -99,6 +110,14 @@ def trimite_email_inundatie():
 conectare_arduino()
 threading.Thread(target=citire_serial, daemon=True).start()
 
+def get_temperatura_db():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT valoare FROM temperatura WHERE id = 1")
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0.0
+
 def get_mesaje_db():
     conn = get_conn()
     c = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -118,14 +137,14 @@ def get_evenimente_db():
 @app.route("/")
 def index():
     return render_template("index.html",
-                           temperatura=temperatura_curenta,
+                           temperatura=get_temperatura_db(),
                            led=led_stare,
                            mesaje=get_mesaje_db(),
                            evenimente=get_evenimente_db())
 
 @app.route("/temperatura")
 def temperatura():
-    return jsonify({"temperatura": temperatura_curenta})
+    return jsonify({"temperatura": get_temperatura_db()})
 
 @app.route("/led", methods=["POST"])
 def led():
