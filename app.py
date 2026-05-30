@@ -49,16 +49,12 @@ init_db()
 
 def conectare_arduino():
     global ser
-    porturi = serial.tools.list_ports.comports()
-    for port in porturi:
-        try:
-            ser = serial.Serial(port.device, 9600, timeout=1)
-            time.sleep(2)
-            print(f"Arduino conectat pe {port.device}")
-            return
-        except:
-            continue
-    print("Arduino negasit - rulam fara hardware")
+    try:
+        ser = serial.Serial("COM3", 9600, timeout=1)
+        time.sleep(2)
+        print("Arduino conectat pe COM3")
+    except Exception as e:
+        print(f"Arduino negasit - rulam fara hardware: {e}")
 
 def salveaza_temperatura(valoare):
     conn = get_conn()
